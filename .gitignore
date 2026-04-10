@@ -1,0 +1,35 @@
+# Secrets — never commit
+.env.local
+.env.prod
+
+# Vendor repos — cloned by bootstrap.sh
+vendor/
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.uv/
+.ruff_cache/
+
+# Supabase local state
+.supabase/
+
+# Docker
+*.tar.gz
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Metering hook — env-specific, written by bootstrap.sh
+vendor/OpenHarness/hooks/hooks.json
+
+# Backups
+backups/

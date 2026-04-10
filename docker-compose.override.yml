@@ -1,0 +1,43 @@
+# Local development overrides
+# Applied automatically by: docker compose up
+# For production build (Nginx): docker compose --profile prod up
+
+version: "3.9"
+
+services:
+
+  # ── EVENT BUS — hot reload ─────────────────────────────────────
+  event-bus:
+    volumes:
+      - ./services/event-bus:/app
+    command: uvicorn main:app --host 0.0.0.0 --port 4001 --reload
+
+  # ── METERING — hot reload ─────────────────────────────────────
+  metering:
+    volumes:
+      - ./services/metering:/app
+    command: uvicorn main:app --host 0.0.0.0 --port 4002 --reload
+
+  # ── UI — Vite dev server with HMR (replaces Nginx prod image) ─
+  ui:
+    image: node:20-alpine
+    working_dir: /app
+    volumes:
+      - ./services/ui:/app
+      - /app/node_modules
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 4000"
+    environment:
+      VITE_EVENT_BUS_URL: ws://localhost:${EVENT_BUS_PORT}
+      VITE_OPENHARNESS_URL: http://localhost:${OPENHARNESS_PORT}
+      VITE_HICLAW_URL: http://localhost:${HICLAW_PORT}
+      VITE_AIO_URL: http://localhost:${AIO_SANDBOX_PORT}
+      VITE_SUPABASE_URL: ${SUPABASE_URL}
+      VITE_SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY}
+
+  # ── OPENHARNESS — live source edits ───────────────────────────
+  openharness:
+    volumes:
+      - ./vendor/OpenHarness:/app
+      - ./agents:/agents:ro
+      - ./skills:/skills:ro
+      - workspace:/workspace

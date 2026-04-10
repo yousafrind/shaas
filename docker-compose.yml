@@ -1,0 +1,188 @@
+version: "3.9"
+
+networks:
+  shouse:
+    driver: bridge
+
+volumes:
+  hiclaw-data:
+  minio-data:
+  workspace:
+
+services:
+
+  # ── MINIO (shared artifact store) ──────────────────────────────
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":${MINIO_CONSOLE_PORT}"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
+    ports:
+      - "${MINIO_PORT}:9000"
+      - "${MINIO_CONSOLE_PORT}:9001"
+    volumes:
+      - minio-data:/data
+    networks: [shouse]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ── MINIO INIT (create buckets on first start) ─────────────────
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+      MINIO_BUCKET_AGENTS: ${MINIO_BUCKET_AGENTS}
+      MINIO_BUCKET_ARTIFACTS: ${MINIO_BUCKET_ARTIFACTS}
+    entrypoint: >
+      /bin/sh -c "
+        mc alias set local http://minio:9000 $${MINIO_ACCESS_KEY} $${MINIO_SECRET_KEY} &&
+        mc mb --ignore-existing local/$${MINIO_BUCKET_AGENTS} &&
+        mc mb --ignore-existing local/$${MINIO_BUCKET_ARTIFACTS} &&
+        echo 'MinIO buckets ready'
+      "
+    restart: "no"
+    networks: [shouse]
+
+  # ── HICLAW MANAGER (orchestrator + matrix + higress) ───────────
+  hiclaw:
+    image: ghcr.io/agentscope-ai/hiclaw-manager:latest
+    environment:
+      HICLAW_ADMIN_USER: ${HICLAW_ADMIN_USER}
+      HICLAW_ADMIN_PASSWORD: ${HICLAW_ADMIN_PASSWORD}
+      HICLAW_LLM_PROVIDER: ${HICLAW_LLM_PROVIDER}
+      HICLAW_LLM_API_KEY: ${OPENAI_API_KEY}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+      MINIO_BUCKET: ${MINIO_BUCKET_AGENTS}
+    ports:
+      - "${HICLAW_PORT}:18088"
+      - "${HICLAW_HIGRESS_PORT}:18001"
+    volumes:
+      - hiclaw-data:/data
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+    networks: [shouse]
+
+  # ── AIO SANDBOX (unified execution runtime) ────────────────────
+  aio-sandbox:
+    image: ghcr.io/agent-infra/sandbox:latest
+    # seccomp:unconfined is a Linux kernel option.
+    # Docker Desktop on Windows runs in a Hyper-V/WSL2 VM so this is silently
+    # accepted and applied inside the VM — no action needed on Windows.
+    security_opt:
+      - seccomp:unconfined
+    shm_size: "2gb"
+    environment:
+      WORKSPACE: ${AIO_WORKSPACE}
+      AIO_SKILLS_PATH: /skills
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+      JWT_PUBLIC_KEY: ${AIO_JWT_PUBLIC_KEY}
+    ports:
+      - "${AIO_SANDBOX_PORT}:8080"
+    volumes:
+      - ./skills:/skills:ro
+      - workspace:/workspace
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+    networks: [shouse]
+
+  # ── OPENHARNESS (agent harness) ────────────────────────────────
+  openharness:
+    build:
+      context: ./vendor/OpenHarness
+      dockerfile: Dockerfile
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_MODEL: ${OPENAI_MODEL}
+      OH_PERMISSION_MODE: ${OH_PERMISSION_MODE}
+      OH_OUTPUT_FORMAT: ${OH_OUTPUT_FORMAT}
+      METERING_EMIT_ENDPOINT: ${METERING_EMIT_ENDPOINT}
+    ports:
+      - "${OPENHARNESS_PORT}:3001"
+    volumes:
+      - ./agents:/agents:ro
+      - ./skills:/skills:ro
+      - workspace:/workspace
+    depends_on:
+      - aio-sandbox
+    networks: [shouse]
+
+  # ── OPENCLAW GATEWAY (autonomous ops — internal only) ──────────
+  openclaw:
+    image: ghcr.io/openclaw/openclaw:latest
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN}
+      SLACK_APP_TOKEN: ${SLACK_APP_TOKEN}
+      OPENCLAW_DM_POLICY: ${OPENCLAW_DM_POLICY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      HICLAW_WEBHOOK: ${OPENCLAW_HICLAW_WEBHOOK}
+    # CRITICAL: No external port mapping. Internal only.
+    # Control port 3080 is NOT exposed to host.
+    expose:
+      - "3080"
+    volumes:
+      - ./config/openclaw.json:/config/openclaw.json:ro
+    depends_on:
+      - hiclaw
+    networks: [shouse]
+
+  # ── EVENT BUS (WebSocket fan-out for UI) ───────────────────────
+  event-bus:
+    build:
+      context: ./services/event-bus
+    environment:
+      OPENHARNESS_URL: http://openharness:3001
+      HICLAW_URL: http://hiclaw:18088
+      HICLAW_ADMIN_USER: ${HICLAW_ADMIN_USER}
+      HICLAW_ADMIN_PASSWORD: ${HICLAW_ADMIN_PASSWORD}
+      AIO_SANDBOX_URL: http://aio-sandbox:8080
+      METERING_ENDPOINT: ${METERING_EMIT_ENDPOINT}
+    ports:
+      - "${EVENT_BUS_PORT}:4001"
+    depends_on:
+      - openharness
+      - hiclaw
+    networks: [shouse]
+
+  # ── METERING SERVICE ──────────────────────────────────────────
+  metering:
+    build:
+      context: ./services/metering
+    environment:
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_KEY: ${SUPABASE_SERVICE_KEY}
+      ORG_ID: ${METERING_ORG_ID}
+    ports:
+      - "${METERING_PORT}:4002"
+    networks: [shouse]
+
+  # ── LOCAL UI (React + Vite) ────────────────────────────────────
+  ui:
+    build:
+      context: ./services/ui
+    environment:
+      VITE_EVENT_BUS_URL: ws://localhost:${EVENT_BUS_PORT}
+      VITE_OPENHARNESS_URL: http://localhost:${OPENHARNESS_PORT}
+      VITE_HICLAW_URL: http://localhost:${HICLAW_PORT}
+      VITE_AIO_URL: http://localhost:${AIO_SANDBOX_PORT}
+      VITE_SUPABASE_URL: ${SUPABASE_URL}
+      VITE_SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY}
+    ports:
+      - "${UI_PORT}:4000"
+    depends_on:
+      - event-bus
+    networks: [shouse]

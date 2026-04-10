@@ -1,0 +1,34 @@
+-- Migration 002: Multi-Tenant Hardening (Sprint 1)
+-- NOT applied in Phase 0. Run after Sprint 1 work begins.
+--
+-- This migration will add:
+--
+-- 1. Row-Level Security on all metering tables
+--    ALTER TABLE token_events ENABLE ROW LEVEL SECURITY;
+--    CREATE POLICY tenant_isolation ON token_events
+--      USING (org_id = current_setting('app.current_org_id')::uuid);
+--    (repeat for seat_events, agent_run_logs)
+--
+-- 2. Users table (Supabase Auth integration)
+--    CREATE TABLE users (
+--      id        uuid primary key references auth.users(id),
+--      org_id    uuid references organisations(id),
+--      role      text check (role in ('owner','member','viewer')),
+--      created_at timestamptz default now()
+--    );
+--
+-- 3. Org members join table
+--    CREATE TABLE org_members (
+--      org_id    uuid references organisations(id),
+--      user_id   uuid references users(id),
+--      role      text check (role in ('owner','member','viewer')),
+--      invited_at timestamptz default now(),
+--      primary key (org_id, user_id)
+--    );
+--
+-- 4. Workspace isolation
+--    ALTER TABLE agent_run_logs ADD COLUMN workspace_id text;
+--    (each tenant gets an isolated AIO Sandbox workspace prefix)
+--
+-- Sprint 1 placeholder — do not run in Phase 0
+select 1;

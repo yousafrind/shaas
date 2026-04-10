@@ -1,0 +1,29 @@
+{
+  "dmPolicy": "pairing",
+  "channels": {
+    "telegram": {
+      "enabled": true,
+      "botToken": "${TELEGRAM_BOT_TOKEN}"
+    },
+    "slack": {
+      "enabled": true,
+      "botToken": "${SLACK_BOT_TOKEN}",
+      "appToken": "${SLACK_APP_TOKEN}"
+    }
+  },
+  "hiclaw": {
+    "webhook": "${OPENCLAW_HICLAW_WEBHOOK}"
+  },
+  "allowFrom": [],
+  "commands": {
+    "status": "Return current agent states, active tasks, and token usage summary",
+    "pause": "Pause all running agent loops",
+    "resume": "Resume paused agent loops",
+    "approve": "Approve the current pending approval request"
+  },
+  "security": {
+    "requirePairing": true,
+    "pairingTimeoutSeconds": 300,
+    "maxFailedAttempts": 3
+  }
+}
